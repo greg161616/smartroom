@@ -1,0 +1,3 @@
+project_id = "smartroom-iot"
+[functions.device-sync]
+verify_jwt = false

@@ -1,0 +1,18 @@
+import React,{useState,useRef,useCallback,createContext,useContext} from 'react';
+import {View,Text,TextInput,Pressable,ScrollView,Switch,Alert,AppState,StatusBar,StyleSheet,RefreshControl,ActivityIndicator,KeyboardAvoidingView,Platform} from 'react-native';
+import * as api from '../lib/api';
+import type {Snapshot} from '../lib/api';
+import type {Settings,Relay} from '../lib/types';
+import {useTheme,Txt,Card,Button,Field,styles,dateText,err} from './ui';
+type GestureProps = {
+  settings: Settings;
+  busy: boolean;
+  mutate: (fn: () => Promise<unknown>) => Promise<void>;
+};
+
+export function Gesture(props: GestureProps) {
+  const { distance_cm, hold_ms } = props.settings;
+  return <GestureForm key={JSON.stringify([distance_cm, hold_ms])} {...props} />;
+}
+
+function GestureForm({settings,busy,mutate}: GestureProps){const t=useTheme();const [distance,D]=useState(String(settings.distance_cm)),[hold,H]=useState(String(settings.hold_ms));const save=(patch:Partial<Omit<Settings,'device_id'>>)=>void mutate(()=>api.saveSettings(settings.device_id,patch));return <Card><View style={styles.row}><View style={{flex:1,gap:4}}><Txt>Gesture control</Txt><Txt muted>Ultrasonic sensor</Txt></View><Switch disabled={busy} value={settings.gesture_enabled} onValueChange={v=>save({gesture_enabled:v})}/></View>{([{mode:'wave',title:'Wave detection',desc:'1 wave: light 1 · 2 waves: light 2 · hold: both'},{mode:'presence',title:'Presence detection',desc:'Lights follow nearby detection'},{mode:'toggle',title:'Both lights toggle',desc:'A close gesture toggles both lights'}] as const).map(m=><View key={m.mode} style={{gap:4}}><Button label={(settings.mode===m.mode?'✓ ':'')+m.title} secondary={settings.mode!==m.mode} disabled={busy||!settings.gesture_enabled} onPress={()=>save({mode:m.mode})}/><Txt muted>{m.desc}</Txt></View>)}<Txt>Detection distance (2–100 cm)</Txt><Field value={distance} onChangeText={D} placeholder="Distance in cm" numeric/><Txt>Hold duration (500–10000 ms)</Txt><Field value={hold} onChangeText={H} placeholder="Hold in milliseconds" numeric/><Button label="Save sensor settings" disabled={busy} onPress={()=>{const d=Number(distance),h=Number(hold);if(!Number.isInteger(d)||d<2||d>100||!Number.isInteger(h)||h<500||h>10000){Alert.alert('Invalid sensor settings','Enter whole numbers within the displayed limits.');return}save({distance_cm:d,hold_ms:h})}}/><Txt color={t.warn}>Saved in cloud; firmware has not confirmed these settings.</Txt></Card>}

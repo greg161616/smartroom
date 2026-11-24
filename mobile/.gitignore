@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# ESP8266 private credentials
+firmware/SmartRoom/config.h
+
+# Build files
+*.bin
+*.elf
+*.apk

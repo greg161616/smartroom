@@ -1,0 +1,13 @@
+// Run with Node 22+ and TypeScript available (`npm install --no-save typescript`).
+const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const ts=require('typescript');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../supabase/functions/device-sync/index.ts'),'utf8');
+const {outputText,diagnostics}=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022},reportDiagnostics:true});assert.equal(diagnostics.length,0);
+let handler,last,calls=0,dbStatus=200;const received=new Map();
+const mockFetch=async(url,opts)=>{calls++;last={url,body:JSON.parse(opts.body)};if(dbStatus!==200)return Response.json({code:dbStatus===401?'28000':'XX000'},{status:dbStatus});for(const e of last.body.p_events)received.set(e.id,e);return Response.json({settings:{},commands:[],event_acks:last.body.p_events.map(e=>e.id)});};
+vm.runInNewContext(outputText,{Deno:{serve:f=>handler=f,env:{get:()=> 'mock'}},fetch:mockFetch,Response,TextDecoder,Uint8Array,AbortSignal,console:{error(){}}});
+const b={device_id:'11111111-1111-1111-1111-111111111111',state1:false,state2:true,reset:true,ack:[]};const e={id:'a'.repeat(32),channel:1,state:true,epoch:0};
+const send=(body,token='b'.repeat(64),method='POST')=>handler(new Request('https://example.test',{method,headers:{'x-device-token':token},...(method==='POST'?{body:JSON.stringify(body)}:{})}));
+(async()=>{assert.equal((await send(b,'bad')).status,401);assert.equal(calls,0);assert.equal((await send(b,undefined,'GET')).status,405);assert.equal((await send({...b,events:[{...e,channel:3}]})).status,400);assert.equal((await send({...b,events:Array(9).fill(e)})).status,400);assert.equal((await send({...b,events:[{...e,epoch:-1}]})).status,400);assert.equal((await send({...b,events:[{...e,epoch:4102444801}]})).status,400);assert.equal(calls,0);
+assert.equal((await send(b)).status,200);assert.deepEqual(last.body.p_events,[]);assert.match(last.url,/smartroom_device_sync_v4$/);assert.deepEqual((await (await send({...b,events:[e]})).json()).event_acks,[e.id]);assert.deepEqual((await (await send({...b,events:[e]})).json()).event_acks,[e.id]);assert.equal(received.size,1); // mock only, actual dedup is SQL index
+assert.equal((await send({...b,events:Array.from({length:8},(_,i)=>({...e,id:i.toString(16).repeat(32),epoch:1700000000}))})).status,200);
+assert.equal((await send({...b,padding:'x'.repeat(2100)})).status,413);dbStatus=401;assert.equal((await send(b)).status,401);dbStatus=500;assert.equal((await send(b)).status,502);console.log('Phase 4 API mock checks passed (legacy sync, batches, validation, retries, auth and backend errors).');})().catch(e=>{console.error(e);process.exitCode=1});
