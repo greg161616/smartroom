@@ -1,16 +1,67 @@
-import React,{useEffect,useState,useRef,useCallback,createContext,useContext} from 'react';
-import {View,Text,TextInput,Pressable,ScrollView,Switch,Alert,AppState,StatusBar,StyleSheet,RefreshControl,ActivityIndicator,KeyboardAvoidingView,Platform} from 'react-native';
+import React,{useCallback,useContext,useEffect,useMemo,useRef,useState,createContext} from 'react';
+import {Alert,AppState} from 'react-native';
 import * as api from '../lib/api';
 import type {Snapshot} from '../lib/api';
+import {supabase} from '../lib/supabase';
+import {createLiveSync,type LiveState} from '../lib/liveSync';
+import {isDeviceOnline,nextDeadline,SECTIONS,type Section} from '../lib/liveModel';
 import {err} from '../components/ui';
-function useController(){const [data,D]=useState<Snapshot|null>(null),[error,X]=useState(''),[loading,L]=useState(false),[busy,B]=useState(false),[now,N]=useState(Date.now());const room=useRef<string|null>(null),lock=useRef(false),write=useRef(false),alive=useRef(true);
- const load=useCallback(async()=>{if(lock.current)return;lock.current=true;L(true);try{if(!room.current)room.current=await api.setup();const d=await api.fetchRoom(room.current);if(alive.current){D(d);X('');N(Date.now())}}catch(e){if(alive.current)X(err(e))}finally{lock.current=false;if(alive.current)L(false)}},[]);
- useEffect(()=>{alive.current=true;void load();const timer=setInterval(()=>{N(Date.now());if(AppState.currentState==='active'&&!write.current)void load()},15000);const a=AppState.addEventListener('change',s=>{if(s==='active')void load()});return()=>{alive.current=false;clearInterval(timer);a.remove()}},[load]);
- async function mutate(fn:()=>Promise<unknown>){if(write.current)return;write.current=true;B(true);try{await fn();while(lock.current&&alive.current)await new Promise(r=>setTimeout(r,50));if(alive.current)await load()}catch(e){Alert.alert('Operation failed',err(e))}finally{write.current=false;if(alive.current)B(false)}}
- const online=!!data?.device.last_seen&&!error&&now-Date.parse(data.device.last_seen)<25000;
- const control=(channel:number,state:boolean)=>{if(data&&online)void mutate(()=>api.requestLights(data.device.id,channel,state))};
- const disabled=busy||!online;
-return {data,error,loading,busy,now,load,mutate,online,control,disabled};}
+let channelSequence=0;
+export type Mutate=(fn:()=>Promise<unknown>,sections?:readonly Section[])=>Promise<void>;
+function useController(){
+ const [data,setData]=useState<Snapshot|null>(null);
+ const [live,setLive]=useState<LiveState>({connection:'connecting',error:'',loading:true});
+ const [busy,setBusy]=useState(false),[now,setNow]=useState(Date.now);
+ const dataRef=useRef<Snapshot|null>(null),runtime=useRef<ReturnType<typeof createLiveSync>|null>(null),write=useRef(false);
+ useEffect(()=>{
+  const manager=createLiveSync({
+   discover:api.discover,fetchLive:api.fetchLive,fetchRoom:api.fetchRoom,fetchParts:api.fetchParts,
+   subscribe(id,onSignal,onStatus){
+    // The filter restricts the device; RLS independently checks the signed-in owner.
+    // Unique topic names prevent an old asynchronous channel removal affecting a new join.
+    const channel=supabase.channel(`smartroom-live:${id}:${++channelSequence}`)
+     .on('postgres_changes',{event:'UPDATE',schema:'public',table:'smartroom_live',filter:`device_id=eq.${id}`},payload=>onSignal(payload.new))
+     .on('postgres_changes',{event:'INSERT',schema:'public',table:'smartroom_live',filter:`device_id=eq.${id}`},payload=>onSignal(payload.new))
+     .subscribe(status=>onStatus(status));
+    return ()=>{void supabase.removeChannel(channel).catch(()=>{});};
+   },
+   onSnapshot(snapshot,heartbeatOnly){dataRef.current=snapshot;setData(snapshot);if(!heartbeatOnly)setNow(Date.now());},
+   onState:setLive,
+  });
+  runtime.current=manager;
+  const onAppState=(state:string)=>{setNow(Date.now());if(state==='active')manager.start();else manager.pause();};
+  onAppState(AppState.currentState??'active');
+  const app=AppState.addEventListener('change',onAppState);
+  return()=>{app.remove();runtime.current=null;manager.dispose();};
+ },[]);
+ // Deadline updates are local. No periodic REST request or global one-second clock.
+ useEffect(()=>{
+  if(live.connection==='paused')return;
+  const current=Date.now();const deadline=nextDeadline(data,current);
+  // If a deadline elapsed before this effect ran, catch the display up once.
+  const previousDeadline=nextDeadline(data,now);
+  if(previousDeadline!==null&&previousDeadline<=current){setNow(current);return;}
+  if(deadline===null)return;
+  const timer=setTimeout(()=>setNow(Date.now()),Math.min(2147483647,Math.max(1,deadline-current+5)));
+  return()=>clearTimeout(timer);
+ },[data,now,live.connection]);
+ const load=useCallback(async()=>{runtime.current?.manual();},[]);
+ const mutate:Mutate=useCallback(async(fn,sections=SECTIONS)=>{
+  const manager=runtime.current;
+  if(!manager||!manager.canWrite()||write.current)return;
+  write.current=true;setBusy(true);
+  try{await fn();if(runtime.current===manager)manager.invalidate(sections);}
+  catch(e){if(runtime.current===manager)Alert.alert('Operation failed',err(e));}
+  finally{write.current=false;if(runtime.current===manager)setBusy(false);}
+ },[]);
+ const cloudReady=live.connection==='live'&&!live.error;
+ const online=cloudReady&&isDeviceOnline(data?.device.last_seen,Date.now());
+ const control=useCallback((channel:number,state:boolean)=>{
+  const snapshot=dataRef.current;
+  if(snapshot&&runtime.current?.canWrite()&&isDeviceOnline(snapshot.device.last_seen,Date.now()))void mutate(()=>api.requestLights(snapshot.device.id,channel,state),['commands','schedules']);
+ },[mutate]);
+ return useMemo(()=>({data,error:live.error,loading:live.loading,busy,now,load,mutate,online,control,disabled:busy||!online,cloudReady,connection:live.connection}),[data,live,busy,now,load,mutate,online,control,cloudReady]);
+}
 const DeviceContext=createContext<ReturnType<typeof useController>|null>(null);
-export function DeviceProvider({children}:{children:React.ReactNode}){const value=useController();return <DeviceContext.Provider value={value}>{children}</DeviceContext.Provider>}
+export function DeviceProvider({children}:{children:React.ReactNode}){const value=useController();return <DeviceContext.Provider value={value}>{children}</DeviceContext.Provider>;}
 export function useDevice(){const v=useContext(DeviceContext);if(!v)throw Error('DeviceProvider missing');return v;}

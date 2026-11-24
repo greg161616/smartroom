@@ -1,9 +1,10 @@
-import React,{useEffect,useState,useRef,useCallback,createContext,useContext} from 'react';
-import {View,Text,TextInput,Pressable,ScrollView,Switch,Alert,AppState,StatusBar,StyleSheet,RefreshControl,ActivityIndicator,KeyboardAvoidingView,Platform} from 'react-native';
-import {router} from 'expo-router';
+import React from 'react';
+import {useLocalSearchParams} from 'expo-router';
 import {useDevice} from '../../contexts/DeviceContext';
-import {useAuth} from '../../contexts/AppContext';
-import {useTheme,Txt,Card,Button,styles,dateText} from '../../components/ui';
 import {Screen} from '../../components/Screen';
-import {supabase} from '../../lib/supabase';
-import {Schedules} from '../../components/Schedules';export default function Page(){const {data,busy,error,mutate,now}=useDevice();return <Screen title='Schedules'>{data&&<Schedules data={data} busy={busy||!!error} mutate={mutate} now={now}/>}</Screen>}
+import {Schedules} from '../../components/Schedules';
+export default function Page(){
+ const {data,busy,cloudReady,mutate,now}=useDevice();
+ const {preset,seed}=useLocalSearchParams<{preset?:string;seed?:string}>();
+ return <Screen title="Schedules">{data?<Schedules data={data} busy={busy||!cloudReady} mutate={mutate} now={now} preset={preset} seed={seed}/>:null}</Screen>;
+}
